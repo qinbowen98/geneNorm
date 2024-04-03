@@ -1,0 +1,22 @@
+## 环境依赖
+python3.8
+torch=1.11+
+transformers 需要安装全库
+1. 激活虚拟环境
+2. `cd /your_path/transformers-4.39.0`
+3. `pip install .`
+
+## entity_link
+### 使用
+模型推理主体在entity_linker.py中，使用时需要实例化EntityLinker类，然后调用infer方法进行推理
+
+```py
+entity_linker = EntityLinker(database_path=database_path, saving_path=saving_path, pretrained_model_path=pretrained_model_path)
+example = ['The gene is involved in the biological process of response to drug.']
+result = entity_linker.infer(example, topk=10)
+```
+example 是一个list，每个元素是一个句子/str
+
+### NOTE
+1. 务必安装transformers库的全库
+2. 修改`base_path`为你的项目路径
