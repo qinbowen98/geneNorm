@@ -106,6 +106,212 @@ outputdic = {}
 model_gene = GeneTaggerV2Path+"/biobert_model_ner_gene"
 model_species = GeneTaggerV2Path+"/biobert_model_ner_specis"
 model_token = GeneTaggerV2Path+"/biobert_v1.1_pubmed"
+
+
+def entity_link_update_genetagger(function_file, save_file):
+    pmid = []
+    functions_all = []
+    IDs = []
+    GO = obo_parser.GODag("E:\GBT\pipeline\go.obo")
+    tokenizer = BertTokenizer.from_pretrained(model_token, do_lower_case=False)
+    tag_values = ['B', 'E', 'I', 'O', 'S']
+    tag_values.append("PAD")
+    tag2idx = {t: i for i, t in enumerate(tag_values)}
+    model = BertForTokenClassification.from_pretrained(
+        model_token,
+        num_labels=len(tag2idx),
+        output_attentions=False,
+        output_hidden_states=True
+    )
+    start_time = time.time()
+    df_function = pd.read_csv("go_mb_ours.csv")
+    go_name_all = df_function["Name"].tolist()
+    go_id_all = df_function["ID"].tolist()
+    functions_length = []
+
+    df_useful = list(set(go_name_all))
+    function_features = np.loadtxt('entity_link_embedding_go_mb_dataset.csv', delimiter=',')
+    #print("old ",len(go_name_all))
+    #print("new ",len(df_useful))
+    # In[ ]:
+    function_features_clean = []
+    for i in df_useful:
+        function_features_clean.append(function_features[df_useful.index(i)])
+    df_length = []
+    for i in df_useful:
+        df_length.append(len(tokenizer.encode(i)))
+    min_function = min(df_length)
+    max_function = max(df_length)
+    #print(min_function,max_function)
+    end_time = time.time()
+    #print("load data ",end_time-start_time)
+
+    model.eval()
+    df = pd.read_csv(function_file, sep='\t')
+    function_entity = df['function'].tolist()
+    temp_length = int(len(df) / 8) + 1
+
+    test_entities = ["expressed at high levels during active secondary wall cellulose synthesis in developing cotton fibers"#"GO:0030244"
+                    ,"exhibits a transcriptionally regulated circadian rhythm"#"GO:0007623"
+                     ,"the germination response of spores"#"GO:0009847"
+                    ,"induced by jasmonic acid"#GO:0009753
+                     ]
+    for num in range(len(df)):
+        '''
+        if num % (int(len(df) / 10) + 1) == 0:
+            print("entity_link_update:", num / len(df))
+        '''
+        start_time = time.time()
+        function_entities = str(function_entity[num])
+        function_entities = re.sub(r"\s*[^A-Za-z]+\s*", " ", function_entities)
+        function_sims = []
+        functions = []
+        functions_name = []
+        tokenized_sentence = tokenizer.encode(function_entities)
+        # print(tokenized_sentence)
+        # print(len(tokenized_sentence))
+        # input_ids = torch.tensor([tokenized_sentence]).cuda()
+        input_ids = torch.tensor([tokenized_sentence[:511]])
+        # pmids_d.append(df1['pmid'][num])
+        # all_stre.append(str(i))
+        with torch.no_grad():
+            output = model(input_ids)
+        end_time = time.time()
+        #print("produce embedding ", end_time - start_time)
+        ''''''
+        start_time = time.time()
+        for i in range(len(df_function)):
+            tokenized_function = tokenizer.encode(df_function["Name"][i])
+            temp_length = min(len(tokenized_function) - 2, len(function_entities.split(" ")))
+            if df_function['Depth'][i] >= 4 and GO.query_term(df_function['ID'][i]):
+                go_embedding = function_features[i]
+                sim = []
+                temp = []
+                # print(len(output.hidden_states[0][0][1:-1]))
+                for l in range(len(output.hidden_states[0][0][1:-1]) - temp_length):
+                    s = sum(output.hidden_states[0][0][l + 1:l + temp_length + 1]).detach().numpy().tolist()
+
+                    # print(len(sum(output.hidden_states[0][0][1:-1]).detach().numpy().tolist()))
+                    # print(len(output.hidden_states[0][0][-1].detach().numpy().tolist()))
+                    sim.append(cos_sim(go_embedding, s))
+                if len(sim) > 0:
+                    if max(sim) > 0.70:
+                        functions.append(df_function["ID"][i])
+                        function_sims.append(max(sim))
+                        functions_name.append(df_function["Name"][i])
+
+        end_time = time.time()
+        
+        #print("slide ", end_time - start_time)
+
+        start_time = time.time()
+        hidden_states = output.hidden_states[0][0][1:-1].detach().numpy()
+        function_entities_len = len(tokenizer.encode(function_entities))
+
+        # 假设go_embedding已经是合适的形状，或者进行了适当的调整
+        # 示例中未提供function_features的结构，假设它是一个二维数组
+        # 生成一个包含所有滑动窗口的矩阵
+        '''
+        windows_all = []
+        for i in range(min_function):
+            windows_all.append([])
+        for length in range(min_function,max_function+1):
+            windows = []
+            temp_l = max(1,min(length, function_entities_len)-4)
+            print("temp length",temp_l)
+            print("temp length", len(hidden_states) - temp_l)
+            for l in range(len(hidden_states) - temp_l):
+                #tokenized_function = tokenizer.encode(df_function["Name"][i])
+                s = sum(output.hidden_states[0][0][l + 1:l + temp_l + 1]).detach().numpy().tolist()
+                windows.append(s)
+            windows = np.array(windows)
+            windows_all.append(windows)
+        '''
+        windows_all = [np.array([hidden_states[l:l + temp_l] for l in range(len(hidden_states) - temp_l)])
+                       for temp_l in range(1, max_function - min_function + 2)]
+        #windows = np.array([hidden_states[l:l + function_entities_len] for l in range(len(hidden_states) - function_entities_len + 1)])
+        #print("windows ",windows.shape)
+        for i, row in df_function.iterrows():
+            if row['Depth'] >= 4 and GO.query_term(row['ID']):
+                temp = []
+                tokenized_function = tokenizer.encode(df_function["Name"][i])
+                for s in range(len(windows_all[len(tokenized_function)])):
+                    temp.append(function_features[i])
+                go_embeddings = np.array(temp)
+                #print("windows ", go_embeddings.shape)
+                # 对于每个满足条件的行，计算go_embedding与所有窗口的相似度
+                #print(len(tokenized_function))
+                #print(go_embeddings.shape, windows_all[len(tokenized_function)].shape)
+                sim = vectorized_cos_sim(go_embeddings, windows_all[len(tokenized_function)])  # go_embeddings[i:i+1] 保持二维形状
+                max_sim = np.max(sim)
+
+                if max_sim > 0.70:
+                    functions.append(row["ID"])
+                    function_sims.append(max_sim)
+                    functions_name.append(row["Name"])
+
+        end_time = time.time()
+        #print("slide new", end_time - start_time)
+        start_time = time.time()
+
+
+
+
+        result = []
+        for i in functions_name:
+            id_temp = functions[functions_name.index(i)]
+            parents = GO.query_term(id_temp).get_all_parents()
+            p = []
+            for G in parents:
+                p.append((G, GO.query_term(G).depth))
+            p.sort(key=takeSecond)
+            flag = 0
+            for j in p:
+                temp_max = 0
+                temp_lab = 0
+                if j[0] in functions:
+                    for k in range(len(functions)):
+                        if function_sims[k] > temp_max and functions[k] == j:
+                            temp_max = function_sims[k]
+                            temp_lab = k
+                    result.append((functions_name[k], temp_max))
+                    flag = 1
+                    break
+            if flag == 0:
+                result.append((i, function_sims[functions_name.index(i)]))
+        result = list(set(result))
+        result.sort(key=takeSecond, reverse=True)
+
+        end_time = time.time()
+        #print("GO assemble ", end_time - start_time)
+        start_time = time.time()
+        if len(result) > 0:
+            node_queue = [result[0]]
+            for pairs in result:
+                flag = 0
+                for j in node_queue:
+                    if cos_sim(function_features[go_name_all.index(j[0])],
+                               function_features[go_name_all.index(pairs[0])]) > 0.7:
+                        flag = 1
+                if flag == 0:
+                    node_queue.append(pairs)
+                    node_queue = list(set(node_queue))
+            node_queue.sort(key=takeSecond, reverse=True)
+            temp = []
+            for s in node_queue[:3]:
+                temp.append(go_id_all[go_name_all.index(s[0])])
+            IDs.append(",".join(temp))
+        else:
+            IDs.append("None")
+        #       print("find: ", s)
+        # print("#################")
+        #print("final assemble ", end_time - start_time)
+    df["old_link"] = IDs
+    df.to_csv(save_file, sep='\t')
+
+
+
+
 def tsv_reader(file_path):
     with open(file_path, 'r') as f:
         for line in f:
@@ -326,7 +532,8 @@ def main():
                 'biobert': osp.join(base_path, 'models/pretrained/biobert_v1.1_pubmed_pytorch_model'),
             }
             linker_option = 'pruning_60_5_v3'
-
+            #这个方法对应1万以上功能
+            '''
             entity_linker = EntityLinker(database_path=database_path, saving_path=saving_path,
                                          pretrained_model_path=pretrained_model_path)
             df = pd.read_csv(file_path,sep='\t')
@@ -337,7 +544,11 @@ def main():
                 goterms_name = ",".join(result[0])
                 goterms.append(goterms_name)
             # 显示合并后的 DataFrame 的前几行
-            df["GOterms"] = goterms
+            '''
+            final_temp_file = file_path.replace("gene_species_withfunction", "final_file_goterm")
+            entity_link_update_genetagger(file_path,final_temp_file)
+            df_temp = pd.read_csv(final_temp_file,sep='\t')
+            df["GOterms"] = df_temp["old_link"]
             final_file = file_path.replace("gene_species_withfunction","final_file")
 
             multi_search_and_save_genetagger(df,final_file)
